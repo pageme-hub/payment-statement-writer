@@ -1,0 +1,11 @@
+[project]
+name = "payment-statement-writer"
+version = "0.1.0"
+description = "간이지급명세서 자동입력기 - 정산서 Excel 파일에서 데이터를 추출하여 명세서 템플릿에 자동으로 입력하는 데스크톱 애플리케이션"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyside6>=6.6.0",
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+]
