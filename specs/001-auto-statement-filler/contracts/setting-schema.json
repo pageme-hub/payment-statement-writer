@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Setting Configuration Schema",
+  "description": "셀 매핑 및 명세서 파일 경로를 관리하는 설정 파일 스키마",
+  "type": "object",
+  "required": ["cell_mappings"],
+  "properties": {
+    "statement_template_path": {
+      "type": "string",
+      "description": "명세서 템플릿 파일의 전체 경로. 프로그램 시작 시 자동으로 로드됨 (FR-017). 파일 선택 시 자동으로 저장됨 (FR-016).",
+      "default": ""
+    },
+    "cell_mappings": {
+      "type": "object",
+      "description": "정산서와 명세서 간의 셀 매핑 정보. 하드코딩 대신 이 설정을 사용해야 함 (FR-014, FR-015).",
+      "required": [
+        "settlement_input_range",
+        "settlement_data_columns",
+        "statement_output_columns",
+        "statement_start_row",
+        "statement_fixed_values"
+      ],
+      "properties": {
+        "settlement_input_range": {
+          "type": "string",
+          "description": "정산서 파일에서 유효한 행을 찾기 위한 범위 (예: 'B1:B100')",
+          "pattern": "^[A-Z]+\\d+:[A-Z]+\\d+$",
+          "default": "B1:B100"
+        },
+        "settlement_data_columns": {
+          "type": "array",
+          "description": "정산서에서 추출할 열 목록 (FR-008)",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]+$"
+          },
+          "minItems": 1,
+          "default": ["C", "I", "J", "K"]
+        },
+        "statement_output_columns": {
+          "type": "array",
+          "description": "명세서에 데이터를 입력할 열 목록 (FR-009). settlement_data_columns와 순서가 일치해야 함.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]+$"
+          },
+          "minItems": 1,
+          "default": ["E", "H", "J", "K"]
+        },
+        "statement_start_row": {
+          "type": "integer",
+          "description": "명세서에 데이터 입력을 시작할 행 번호 (FR-009)",
+          "minimum": 1,
+          "default": 2
+        },
+        "statement_fixed_values": {
+          "type": "object",
+          "description": "명세서의 각 행에 고정값으로 입력할 열과 값 (FR-010)",
+          "properties": {
+            "column_a": {
+              "type": "string",
+              "description": "A열 계산식: 'row_number - 1' (자동 계산됨)"
+            },
+            "column_b": {
+              "type": "string",
+              "description": "B열: 선택된 년도 (UI에서 설정)"
+            },
+            "column_c": {
+              "type": "string",
+              "description": "C열: 선택된 월 (UI에서 설정)"
+            },
+            "column_d": {
+              "type": "number",
+              "description": "D열 고정값: 940918",
+              "default": 940918
+            },
+            "column_g": {
+              "type": "number",
+              "description": "G열 고정값: 1",
+              "default": 1
+            },
+            "column_i": {
+              "type": "number",
+              "description": "I열 고정값: 3",
+              "default": 3
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "statement_template_path": "C:/Users/User/Documents/명세서템플릿.xlsx",
+      "cell_mappings": {
+        "settlement_input_range": "B1:B100",
+        "settlement_data_columns": ["C", "I", "J", "K"],
+        "statement_output_columns": ["E", "H", "J", "K"],
+        "statement_start_row": 2,
+        "statement_fixed_values": {
+          "column_d": 940918,
+          "column_g": 1,
+          "column_i": 3
+        }
+      }
+    }
+  ]
+}
+
