@@ -36,15 +36,16 @@ class StatementTemplate:
             config.load()
         self.config = config
     
-    def write_data(self, row_data: List[Dict[str, Any]]) -> None:
-        """Write data to E, H, J, K columns starting from row 2 with formatting preservation.
+    def write_data(self, row_data: List[Dict[str, Any]], driver_list_data: Optional[Dict[str, str]] = None) -> None:
+        """Write data to statement columns using new field mapping structure.
         
         This method writes the extracted settlement data to the statement
         template, preserving all existing formatting (FR-009, FR-011).
         
         Args:
             row_data: List of dictionaries containing data to write.
-                     Each dict should have keys: col_c, col_i, col_j, col_k
+                     Each dict should have keys: name, payment, income_tax, local_income_tax
+            driver_list_data: Dictionary mapping names to resident numbers (optional)
                      
         Raises:
             FileNotFoundError: If template file doesn't exist
@@ -59,36 +60,67 @@ class StatementTemplate:
         # Get configuration (use company-specific mapping if available)
         company_name = getattr(self, 'company_name', None)
         cell_mappings = self.config.get_cell_mappings(company_name)
-        output_columns = cell_mappings.get("statement_output_columns", ["E", "H", "J", "K"])
-        data_columns = cell_mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
         
-        # Map data columns to output columns
-        column_map = dict(zip(data_columns, output_columns))
+        # Get field mappings (new format) or convert from old format
+        field_mappings = cell_mappings.get("field_mappings", {})
+        if not field_mappings:
+            # Fallback to old format conversion
+            old_data_cols = cell_mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
+            old_output_cols = cell_mappings.get("statement_output_columns", ["E", "H", "J", "K"])
+            field_mappings = {}
+            if len(old_data_cols) >= 1 and len(old_output_cols) >= 1:
+                field_mappings["name"] = {"statement_column": old_output_cols[0]}
+            if len(old_data_cols) >= 2 and len(old_output_cols) >= 2:
+                field_mappings["payment"] = {"statement_column": old_output_cols[1]}
+            if len(old_data_cols) >= 3 and len(old_output_cols) >= 3:
+                field_mappings["income_tax"] = {"statement_column": old_output_cols[2]}
+            if len(old_data_cols) >= 4 and len(old_output_cols) >= 4:
+                field_mappings["local_income_tax"] = {"statement_column": old_output_cols[3]}
+        
+        # Get statement columns from field mappings
+        name_col = field_mappings.get("name", {}).get("statement_column", "E")
+        resident_number_col = field_mappings.get("resident_number", {}).get("statement_column", "F")
+        payment_col = field_mappings.get("payment", {}).get("statement_column", "H")
+        income_tax_col = field_mappings.get("income_tax", {}).get("statement_column", "J")
+        local_tax_col = field_mappings.get("local_income_tax", {}).get("statement_column", "K")
+        
+        # Get start row
+        start_row = cell_mappings.get("statement_start_row", 2)
         
         # Write data to each row
         for idx, data_row in enumerate(row_data):
-            target_row = self.start_row + idx
+            target_row = start_row + idx
             
-            # Write each column
-            for data_col, output_col in column_map.items():
-                cell_address = f"{output_col}{target_row}"
-                value = data_row.get(f"col_{data_col.lower()}")
-                ExcelHelper.write_value(worksheet, cell_address, value, preserve_format=True)
+            # Write name
+            ExcelHelper.write_value(worksheet, f"{name_col}{target_row}", data_row.get("name"), preserve_format=True)
+            
+            # Write resident number (from driver list if available)
+            if driver_list_data:
+                name = data_row.get("name", "")
+                resident_number = driver_list_data.get(name, "")
+                ExcelHelper.write_value(worksheet, f"{resident_number_col}{target_row}", resident_number, preserve_format=True)
+            
+            # Write payment
+            ExcelHelper.write_value(worksheet, f"{payment_col}{target_row}", data_row.get("payment"), preserve_format=True)
+            
+            # Write income tax
+            ExcelHelper.write_value(worksheet, f"{income_tax_col}{target_row}", data_row.get("income_tax"), preserve_format=True)
+            
+            # Write local income tax
+            ExcelHelper.write_value(worksheet, f"{local_tax_col}{target_row}", data_row.get("local_income_tax"), preserve_format=True)
         
         # Save the workbook (will be saved to new file later)
         self._workbook = workbook
         self._worksheet = worksheet
     
     def fill_additional_columns(self, year: int, month: int) -> None:
-        """Fill additional columns A, B, C, D, G, I with fixed values.
+        """Fill additional columns A, B, C and fixed value columns.
         
-        This method fills the additional columns required by FR-010:
+        This method fills the additional columns:
         - Column A: row number starting from 1
         - Column B: selected year
         - Column C: selected month
-        - Column D: 940918 (fixed)
-        - Column G: 1 (fixed)
-        - Column I: 3 (fixed)
+        - Fixed value columns (from fixed_values mapping)
         
         Args:
             year: Selected year from UI
@@ -100,15 +132,33 @@ class StatementTemplate:
         worksheet = self._worksheet
         
         # Get configuration
-        cell_mappings = self.config.get_cell_mappings()
-        fixed_values = cell_mappings.get("statement_fixed_values", {})
+        company_name = getattr(self, 'company_name', None)
+        cell_mappings = self.config.get_cell_mappings(company_name)
+        
+        # Get fixed values (new format) or convert from old format
+        fixed_values = cell_mappings.get("fixed_values", {})
+        if not fixed_values:
+            # Fallback to old format conversion
+            old_fixed = cell_mappings.get("statement_fixed_values", {})
+            fixed_values = {
+                "business_code": {
+                    "column": "D",
+                    "value": old_fixed.get("column_d", 940918)
+                },
+                "resident_status": {
+                    "column": "G",
+                    "value": old_fixed.get("column_g", 1)
+                },
+                "tax_rate": {
+                    "column": "I",
+                    "value": old_fixed.get("column_i", 3)
+                }
+            }
+        
         start_row = cell_mappings.get("statement_start_row", 2)
         
         # Calculate number of rows with data
-        # This should match the number of rows written in write_data()
-        # For now, we'll need to track this - assume it's set by write_data
         if not hasattr(self, '_data_row_count'):
-            # Estimate from worksheet or use a default
             self._data_row_count = 100  # Will be updated by caller
         
         # Fill each row
@@ -124,17 +174,24 @@ class StatementTemplate:
             # Column C: month
             ExcelHelper.write_value(worksheet, f"C{target_row}", month, preserve_format=True)
             
-            # Column D: 940918
-            col_d_value = fixed_values.get("column_d", 940918)
-            ExcelHelper.write_value(worksheet, f"D{target_row}", col_d_value, preserve_format=True)
+            # Fixed values
+            business_code = fixed_values.get("business_code", {})
+            if business_code:
+                col = business_code.get("column", "D")
+                value = business_code.get("value", 940918)
+                ExcelHelper.write_value(worksheet, f"{col}{target_row}", value, preserve_format=True)
             
-            # Column G: 1
-            col_g_value = fixed_values.get("column_g", 1)
-            ExcelHelper.write_value(worksheet, f"G{target_row}", col_g_value, preserve_format=True)
+            resident_status = fixed_values.get("resident_status", {})
+            if resident_status:
+                col = resident_status.get("column", "G")
+                value = resident_status.get("value", 1)
+                ExcelHelper.write_value(worksheet, f"{col}{target_row}", value, preserve_format=True)
             
-            # Column I: 3
-            col_i_value = fixed_values.get("column_i", 3)
-            ExcelHelper.write_value(worksheet, f"I{target_row}", col_i_value, preserve_format=True)
+            tax_rate = fixed_values.get("tax_rate", {})
+            if tax_rate:
+                col = tax_rate.get("column", "I")
+                value = tax_rate.get("value", 3)
+                ExcelHelper.write_value(worksheet, f"{col}{target_row}", value, preserve_format=True)
     
     def save_as(self, output_path: str) -> None:
         """Save the modified workbook to a new file.

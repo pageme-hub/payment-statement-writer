@@ -5,11 +5,12 @@ extracting data, and writing to statement templates.
 """
 
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, List
 from src.models.settlement_file import SettlementFile
 from src.models.statement_file import StatementTemplate
 from src.models.config import Configuration
 from src.services.filename_parser import FilenameParser
+from src.services.driver_list_reader import DriverListReader, DriverInfo
 
 
 class FileProcessor:
@@ -33,6 +34,7 @@ class FileProcessor:
             config.load()
         self.config = config
         self.progress_callback: Optional[Callable[[str], None]] = None
+        self.driver_selection_callback: Optional[Callable[[str, List[DriverInfo]], Optional[DriverInfo]]] = None
     
     def set_progress_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback function for progress updates.
@@ -41,6 +43,14 @@ class FileProcessor:
             callback: Function that takes a message string and displays it
         """
         self.progress_callback = callback
+    
+    def set_driver_selection_callback(self, callback: Callable[[str, List[DriverInfo]], Optional[DriverInfo]]) -> None:
+        """Set callback function for driver selection when duplicates are found.
+        
+        Args:
+            callback: Function that takes name and list of drivers, returns selected driver or None
+        """
+        self.driver_selection_callback = callback
     
     def _log(self, message: str) -> None:
         """Log a progress message.
@@ -58,7 +68,8 @@ class FileProcessor:
         year: int,
         month: int,
         output_dir: Optional[str] = None,
-        company_name: Optional[str] = None
+        company_name: Optional[str] = None,
+        driver_list_path: Optional[str] = None
     ) -> str:
         """Process settlement file and generate statement file.
         
@@ -75,6 +86,7 @@ class FileProcessor:
             month: Selected month
             output_dir: Directory to save output file (uses program directory if None)
             company_name: Company name for mapping lookup (uses parsed or config if None)
+            driver_list_path: Path to driver list Excel file (optional)
             
         Returns:
             Path to the generated output file
@@ -143,16 +155,63 @@ class FileProcessor:
             settlement.company_name = company_name_for_mapping
         row_data = settlement.parse_data_columns()
         
+        # Load driver list if provided
+        driver_reader: Optional[DriverListReader] = None
+        if driver_list_path and Path(driver_list_path).exists():
+            self._log("기사명단 파일 로드 중...")
+            try:
+                driver_reader = DriverListReader(driver_list_path, self.config)
+                driver_name_to_list = driver_reader.load_driver_list()
+                self._log(f"기사명단에서 {sum(len(drivers) for drivers in driver_name_to_list.values())}명의 라이더를 로드했습니다.")
+            except Exception as e:
+                self._log(f"경고: 기사명단 파일을 읽는 중 오류가 발생했습니다: {e}")
+                driver_reader = None
+        elif driver_list_path:
+            self._log(f"경고: 기사명단 파일을 찾을 수 없습니다: {driver_list_path}")
+        
+        # Process driver list data and handle duplicates
+        driver_list_data: Optional[Dict[str, str]] = None
+        if driver_reader and row_data:
+            driver_list_data = {}
+            for row in row_data:
+                name = row.get("name", "")
+                if name:
+                    matching_drivers = driver_reader.get_drivers_by_name(name)
+                    
+                    if len(matching_drivers) == 0:
+                        # No match found
+                        self._log(f"경고: '{name}'에 해당하는 라이더를 찾을 수 없습니다.")
+                        driver_list_data[name] = ""
+                    elif len(matching_drivers) == 1:
+                        # Single match - use it directly
+                        driver = matching_drivers[0]
+                        driver_list_data[name] = driver.resident_number or ""
+                    else:
+                        # Multiple matches - ask user to select
+                        self._log(f"'{name}' 이름과 일치하는 라이더가 {len(matching_drivers)}명 있습니다.")
+                        if self.driver_selection_callback:
+                            selected_driver = self.driver_selection_callback(name, matching_drivers)
+                            if selected_driver:
+                                driver_list_data[name] = selected_driver.resident_number or ""
+                            else:
+                                # User cancelled - skip this row or use empty
+                                driver_list_data[name] = ""
+                                self._log(f"경고: '{name}' 라이더 선택이 취소되었습니다.")
+                        else:
+                            # No callback - use first match
+                            driver = matching_drivers[0]
+                            driver_list_data[name] = driver.resident_number or ""
+                            self._log(f"경고: '{name}' 라이더 선택 콜백이 없어 첫 번째 매칭을 사용합니다.")
+        
         # Debug: log what columns were read
         if row_data:
             first_row = row_data[0]
             self._log(f"추출된 데이터 샘플 (첫 번째 행): {list(first_row.keys())}")
-            self._log(f"읽은 열 수: {len([k for k in first_row.keys() if k.startswith('col_')])}")
         
         self._log("명세서 파일 작성 중...")
         try:
             # StatementTemplate is already created above
-            statement.write_data(row_data)
+            statement.write_data(row_data, driver_list_data)
             statement.set_data_row_count(len(row_data))
             statement.fill_additional_columns(year, month)
         except KeyError as e:

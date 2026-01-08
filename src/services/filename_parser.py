@@ -84,15 +84,29 @@ class FilenameParser:
     def extract_company_name(cls, filename: str) -> Optional[str]:
         """Extract company name from filename.
         
+        Extracts the text before the first space in the filename.
+        For example: "배플 12월 5주차 정산표(1231합산).xlsx" -> "배플"
+        
         Args:
             filename: Settlement file name
             
         Returns:
             Company name if found, None otherwise
         """
+        # First try the existing pattern-based extraction
         result = cls.parse_filename(filename)
         if result:
             return result[0]
+        
+        # Fallback: extract text before first space
+        # Remove extension first
+        name_without_ext = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        # Extract text before first space
+        if ' ' in name_without_ext:
+            company_name = name_without_ext.split(' ', 1)[0].strip()
+            if company_name:
+                return company_name
+        
         return None
     
     @classmethod

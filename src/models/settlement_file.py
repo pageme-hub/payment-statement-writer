@@ -6,6 +6,7 @@ valid rows and data columns according to the configuration.
 
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import re
 from src.utils.excel_helper import ExcelHelper
 from src.models.config import Configuration
 
@@ -87,20 +88,24 @@ class SettlementFile:
         return self.valid_rows
     
     def parse_data_columns(self) -> List[Dict[str, Any]]:
-        """Extract C, I, J, K columns for valid rows only.
+        """Extract data columns for valid rows using new field mapping structure.
         
-        This method reads the specified columns (C, I, J, K) for
-        each valid row identified by parse_valid_rows(). The first column
-        (C) is used as a key column - if it's empty, the row is skipped.
+        This method reads the specified columns based on field_mappings for
+        each valid row identified by parse_valid_rows(). The name column
+        is used as a key column - if it's empty, the row is skipped.
         All values are read as calculated values (formula results).
+        
+        Also applies data processing:
+        - Removes numbers from name field
+        - Filters out rows where all numeric values are 0
         
         Returns:
             List of dictionaries, each containing:
             - row: Row number
-            - col_c: Value from column C (key column)
-            - col_i: Value from column I
-            - col_j: Value from column J
-            - col_k: Value from column K
+            - name: Name value (with numbers removed)
+            - payment: Payment value
+            - income_tax: Income tax value
+            - local_income_tax: Local income tax value
             
         Raises:
             ValueError: If valid_rows is empty (must call parse_valid_rows first)
@@ -114,32 +119,107 @@ class SettlementFile:
         # Get configuration
         company_name = getattr(self, 'company_name', None)
         cell_mappings = self.config.get_cell_mappings(company_name)
-        data_columns = cell_mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
         
-        if not data_columns:
-            raise ValueError("settlement_data_columns must contain at least one column")
+        # Get field mappings (new format) or convert from old format
+        field_mappings = cell_mappings.get("field_mappings", {})
+        if not field_mappings:
+            # Fallback to old format conversion
+            old_data_cols = cell_mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
+            old_output_cols = cell_mappings.get("statement_output_columns", ["E", "H", "J", "K"])
+            field_mappings = {}
+            if len(old_data_cols) >= 1:
+                field_mappings["name"] = {"settlement_column": old_data_cols[0]}
+            if len(old_data_cols) >= 2:
+                field_mappings["payment"] = {"settlement_column": old_data_cols[1]}
+            if len(old_data_cols) >= 3:
+                field_mappings["income_tax"] = {"settlement_column": old_data_cols[2]}
+            if len(old_data_cols) >= 4:
+                field_mappings["local_income_tax"] = {"settlement_column": old_data_cols[3]}
         
-        # First column is the key column
-        key_column = data_columns[0]
+        # Get name column (key column)
+        name_mapping = field_mappings.get("name", {})
+        name_column = name_mapping.get("settlement_column", "C")
+        
+        # Get other columns
+        payment_mapping = field_mappings.get("payment", {})
+        payment_column = payment_mapping.get("settlement_column", "I")
+        
+        income_tax_mapping = field_mappings.get("income_tax", {})
+        income_tax_column = income_tax_mapping.get("settlement_column", "J")
+        
+        local_tax_mapping = field_mappings.get("local_income_tax", {})
+        local_tax_column = local_tax_mapping.get("settlement_column", "K")
         
         self.row_data = []
         for row_num in self.valid_rows:
-            # Check key column (first column) - skip if empty
-            key_cell_address = f"{key_column}{row_num}"
-            key_value = ExcelHelper.get_cell_value(worksheet, key_cell_address)
+            # Check name column (key column) - skip if empty
+            name_cell_address = f"{name_column}{row_num}"
+            name_value = ExcelHelper.get_cell_value(worksheet, name_cell_address)
             
-            # Skip row if key column is empty
-            if key_value is None or (isinstance(key_value, str) and not key_value.strip()):
+            # Skip row if name column is empty
+            if name_value is None or (isinstance(name_value, str) and not name_value.strip()):
                 continue
             
             # Extract all columns for this row
-            row_dict = {"row": row_num}
-            for col in data_columns:
-                cell_address = f"{col}{row_num}"
-                value = ExcelHelper.get_cell_value(worksheet, cell_address)
-                row_dict[f"col_{col.lower()}"] = value
+            payment_value = ExcelHelper.get_cell_value(worksheet, f"{payment_column}{row_num}")
+            income_tax_value = ExcelHelper.get_cell_value(worksheet, f"{income_tax_column}{row_num}")
+            local_tax_value = ExcelHelper.get_cell_value(worksheet, f"{local_tax_column}{row_num}")
+            
+            # Remove numbers from name
+            cleaned_name = self._remove_numbers_from_name(str(name_value) if name_value else "")
+            
+            # Convert numeric values
+            payment_num = self._to_numeric(payment_value)
+            income_tax_num = self._to_numeric(income_tax_value)
+            local_tax_num = self._to_numeric(local_tax_value)
+            
+            # Filter out rows where all numeric values are 0 (except name)
+            if payment_num == 0 and income_tax_num == 0 and local_tax_num == 0:
+                continue
+            
+            row_dict = {
+                "row": row_num,
+                "name": cleaned_name,
+                "payment": payment_num,
+                "income_tax": income_tax_num,
+                "local_income_tax": local_tax_num
+            }
             self.row_data.append(row_dict)
         
         workbook.close()
         return self.row_data
+    
+    def _remove_numbers_from_name(self, name: str) -> str:
+        """Remove numbers from name string.
+        
+        Args:
+            name: Name string that may contain numbers
+            
+        Returns:
+            Name string with numbers removed
+        """
+        # Remove all digits from the string
+        return re.sub(r'\d', '', name).strip()
+    
+    def _to_numeric(self, value: Any) -> float:
+        """Convert value to numeric, returning 0 if conversion fails.
+        
+        Args:
+            value: Value to convert
+            
+        Returns:
+            Numeric value (0 if conversion fails)
+        """
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                # Remove commas and convert
+                cleaned = value.replace(',', '').strip()
+                return float(cleaned) if cleaned else 0.0
+            except ValueError:
+                return 0.0
+        return 0.0
 

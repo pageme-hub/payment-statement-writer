@@ -19,10 +19,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from pathlib import Path
+from typing import Dict, Any
 from src.models.config import Configuration
 from src.services.file_processor import FileProcessor
 from src.services.filename_parser import FilenameParser
+from src.services.driver_list_reader import DriverInfo
 from src.ui.mapping_dialog import MappingDialog
+from src.ui.driver_selection_dialog import DriverSelectionDialog
 from datetime import datetime
 
 
@@ -84,6 +87,20 @@ class MainWindow(QMainWindow):
         statement_group.addWidget(statement_explanation)
         layout.addLayout(statement_group)
         
+        # File selection section - Driver list file
+        driver_list_group = QVBoxLayout()
+        driver_list_label = QLabel("기사명단 파일:")
+        self.driver_list_path_label = QLabel("선택된 파일 없음")
+        self.driver_list_path_label.setWordWrap(True)
+        self.driver_list_button = QPushButton("기사명단 파일 선택")
+        driver_list_explanation = QLabel("기사명단 파일을 선택하세요. (선택사항)")
+        driver_list_explanation.setStyleSheet("color: gray; font-size: 10pt;")
+        driver_list_group.addWidget(driver_list_label)
+        driver_list_group.addWidget(self.driver_list_path_label)
+        driver_list_group.addWidget(self.driver_list_button)
+        driver_list_group.addWidget(driver_list_explanation)
+        layout.addLayout(driver_list_group)
+        
         # Year and month selection
         date_group = QHBoxLayout()
         year_label = QLabel("년도:")
@@ -128,9 +145,13 @@ class MainWindow(QMainWindow):
         self.config.load()
         self.settlement_path: str = ""
         self.statement_template_path: str = ""
+        self.driver_list_path: str = ""
         
         # Load statement template path from config (FR-017)
         self._load_statement_template_path()
+        
+        # Load driver list path from config
+        self._load_driver_list_path()
         
         # Load company list and set current company
         self._load_company_list()
@@ -138,6 +159,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.settlement_button.clicked.connect(self.select_settlement_file)
         self.statement_button.clicked.connect(self.select_statement_file)
+        self.driver_list_button.clicked.connect(self.select_driver_list_file)
         self.company_combo.currentTextChanged.connect(self._on_company_changed)
         self.mapping_button.clicked.connect(self.edit_mapping)
         self.start_button.clicked.connect(self.start_processing)
@@ -149,6 +171,14 @@ class MainWindow(QMainWindow):
             self.statement_template_path = template_path
             self.statement_path_label.setText(template_path)
             self.log_message(f"명세서 템플릿 파일 자동 로드: {template_path}")
+    
+    def _load_driver_list_path(self) -> None:
+        """Load driver list path from setting.json on startup."""
+        driver_list_path = self.config.get_driver_list_path()
+        if driver_list_path and Path(driver_list_path).exists():
+            self.driver_list_path = driver_list_path
+            self.driver_list_path_label.setText(driver_list_path)
+            self.log_message(f"기사명단 파일 자동 로드: {driver_list_path}")
     
     def select_settlement_file(self) -> None:
         """Handle settlement file selection (FR-001)."""
@@ -185,6 +215,25 @@ class MainWindow(QMainWindow):
             self.config.set_statement_template_path(file_path)
             self.config.save()
             self.log_message("명세서 파일 경로가 설정에 저장되었습니다.")
+    
+    def select_driver_list_file(self) -> None:
+        """Handle driver list file selection."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "기사명단 파일 선택",
+            "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        
+        if file_path:
+            self.driver_list_path = file_path
+            self.driver_list_path_label.setText(file_path)
+            self.log_message(f"기사명단 파일 선택: {file_path}")
+            
+            # Save to setting.json
+            self.config.set_driver_list_path(file_path)
+            self.config.save()
+            self.log_message("기사명단 파일 경로가 설정에 저장되었습니다.")
     
     def _load_company_list(self) -> None:
         """Load company list from configuration and populate combo box."""
@@ -226,7 +275,18 @@ class MainWindow(QMainWindow):
         
         # Set company name if extracted
         if company_name:
-            # Check if this is a new company
+            # Add to combo box if not exists
+            if self.company_combo.findText(company_name) < 0:
+                self.company_combo.addItem(company_name)
+            
+            # Set company combo box
+            index = self.company_combo.findText(company_name)
+            if index >= 0:
+                self.company_combo.setCurrentIndex(index)
+            else:
+                self.company_combo.setCurrentText(company_name)
+            
+            # Check if this is a new company (mapping doesn't exist)
             if not self.config.has_company_mapping(company_name):
                 reply = QMessageBox.question(
                     self,
@@ -235,19 +295,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if reply == QMessageBox.StandardButton.Yes:
-                    # Add to combo box if not exists
-                    if self.company_combo.findText(company_name) < 0:
-                        self.company_combo.addItem(company_name)
-                    self.company_combo.setCurrentText(company_name)
                     # Open mapping dialog
                     self.edit_mapping()
-            else:
-                # Set company combo box
-                index = self.company_combo.findText(company_name)
-                if index >= 0:
-                    self.company_combo.setCurrentIndex(index)
-                else:
-                    self.company_combo.setCurrentText(company_name)
         
         if month:
             # Set month combo box
@@ -317,21 +366,86 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "오류", "년도와 월을 선택해주세요.")
             return
         
+        # Get current company name for mapping
+        company_name = self.company_combo.currentText().strip()
+        
+        # Check if company name exists and has mapping
+        if not company_name:
+            QMessageBox.warning(self, "오류", "업체명을 입력해주세요.")
+            return
+        
+        # Check if mapping exists for this company
+        if not self.config.has_company_mapping(company_name):
+            # Get default mappings to show
+            default_mappings = self.config.get_cell_mappings()
+            
+            # Create a message showing the mapping info
+            mapping_info = self._format_mapping_info(default_mappings)
+            
+            reply = QMessageBox.question(
+                self,
+                "매핑 정보 없음",
+                f"'{company_name}' 업체의 매핑 정보가 없습니다.\n\n"
+                f"기본 매핑 정보:\n{mapping_info}\n\n"
+                f"이 매핑으로 등록하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # Open mapping dialog to confirm/edit
+                dialog = MappingDialog(self, default_mappings)
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    new_mappings = dialog.get_mappings()
+                    if new_mappings:
+                        # Save mappings for this company
+                        self.config.set_cell_mappings(new_mappings, company_name)
+                        # Add to combo box if new
+                        if self.company_combo.findText(company_name) < 0:
+                            self.company_combo.addItem(company_name)
+                        self.company_combo.setCurrentText(company_name)
+                        self.config.save()
+                        self.log_message(f"업체 '{company_name}'의 매핑이 저장되었습니다.")
+                else:
+                    # User cancelled, ask if they want to proceed with default
+                    proceed_reply = QMessageBox.question(
+                        self,
+                        "기본 매핑 사용",
+                        "기본 매핑으로 작업을 진행하시겠습니까?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if proceed_reply == QMessageBox.StandardButton.No:
+                        return
+            else:
+                # User chose not to register, ask if they want to proceed with default
+                proceed_reply = QMessageBox.question(
+                    self,
+                    "기본 매핑 사용",
+                    "기본 매핑으로 작업을 진행하시겠습니까?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if proceed_reply == QMessageBox.StandardButton.No:
+                    return
+        
         # Disable button during processing
         self.start_button.setEnabled(False)
         self.log_message("=" * 50)
         self.log_message("작업 시작...")
         
         try:
-            # Get current company name for mapping
-            company_name = self.company_combo.currentText().strip()
-            
             # Create processor with company-specific config
             processor = FileProcessor(self.config)
             processor.set_progress_callback(self.log_message)
             
-            # Get current company name for mapping
-            company_name = self.company_combo.currentText().strip()
+            # Set driver selection callback for handling duplicates
+            def driver_selection_handler(name: str, drivers: list) -> DriverInfo:
+                """Handle driver selection when duplicates are found."""
+                dialog = DriverSelectionDialog(self, name, drivers)
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    return dialog.get_selected_driver()
+                return None
+            
+            processor.set_driver_selection_callback(driver_selection_handler)
             
             # Process files
             output_path = processor.process_files(
@@ -339,7 +453,8 @@ class MainWindow(QMainWindow):
                 self.statement_template_path,
                 year,
                 month,
-                company_name=company_name if company_name else None
+                company_name=company_name if company_name else None,
+                driver_list_path=self.driver_list_path if self.driver_list_path else None
             )
             
             QMessageBox.information(
@@ -362,6 +477,29 @@ class MainWindow(QMainWindow):
             self.log_message(f"오류: {str(e)}")
         finally:
             self.start_button.setEnabled(True)
+    
+    def _format_mapping_info(self, mappings: Dict[str, Any]) -> str:
+        """Format mapping information for display in message box.
+        
+        Args:
+            mappings: Dictionary containing mapping settings
+            
+        Returns:
+            Formatted string with mapping information
+        """
+        info_lines = []
+        info_lines.append(f"정산서 입력 범위: {mappings.get('settlement_input_range', 'N/A')}")
+        info_lines.append(f"정산서 데이터 열: {', '.join(mappings.get('settlement_data_columns', []))}")
+        info_lines.append(f"명세서 출력 열: {', '.join(mappings.get('statement_output_columns', []))}")
+        info_lines.append(f"명세서 시작 행: {mappings.get('statement_start_row', 'N/A')}")
+        
+        fixed_values = mappings.get('statement_fixed_values', {})
+        if fixed_values:
+            info_lines.append(f"고정값 - D열: {fixed_values.get('column_d', 'N/A')}, "
+                            f"G열: {fixed_values.get('column_g', 'N/A')}, "
+                            f"I열: {fixed_values.get('column_i', 'N/A')}")
+        
+        return "\n".join(info_lines)
     
     def log_message(self, message: str) -> None:
         """Add a message to the progress log (FR-018).

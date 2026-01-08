@@ -175,45 +175,230 @@ class Configuration:
         if "current_company" not in self.data:
             self.data["current_company"] = ""
         
+        # Migrate old format to new format if needed
+        self._migrate_old_format()
+        
+        # Validate new format
         if "cell_mappings" not in self.data:
             raise ValueError("cell_mappings is required in configuration")
         
         cell_mappings = self.data["cell_mappings"]
-        required_fields = [
-            "settlement_input_range",
-            "settlement_data_columns",
-            "statement_output_columns",
-            "statement_start_row",
-            "statement_fixed_values"
-        ]
         
-        for field in required_fields:
-            if field not in cell_mappings:
-                raise ValueError(f"Required field '{field}' missing in cell_mappings")
+        # Check if using new format (has field_mappings) or old format
+        if "field_mappings" in cell_mappings:
+            # New format validation
+            required_fields = [
+                "settlement_input_range",
+                "statement_start_row",
+                "field_mappings",
+                "fixed_values"
+            ]
+            
+            for field in required_fields:
+                if field not in cell_mappings:
+                    raise ValueError(f"Required field '{field}' missing in cell_mappings")
+            
+            # Validate field_mappings structure
+            field_mappings = cell_mappings.get("field_mappings", {})
+            required_field_types = ["name", "payment", "income_tax", "local_income_tax"]
+            for field_type in required_field_types:
+                if field_type not in field_mappings:
+                    raise ValueError(f"Required field mapping '{field_type}' missing in field_mappings")
+        else:
+            # Old format - validate and migrate
+            required_fields = [
+                "settlement_input_range",
+                "settlement_data_columns",
+                "statement_output_columns",
+                "statement_start_row",
+                "statement_fixed_values"
+            ]
+            
+            for field in required_fields:
+                if field not in cell_mappings:
+                    raise ValueError(f"Required field '{field}' missing in cell_mappings")
         
         # Validate company_mappings structure if any exist
         for company_name, mappings in self.data.get("company_mappings", {}).items():
-            for field in required_fields:
-                if field not in mappings:
-                    raise ValueError(f"Required field '{field}' missing in company_mappings['{company_name}']")
+            if "field_mappings" in mappings:
+                # New format
+                required_fields = ["settlement_input_range", "statement_start_row", "field_mappings", "fixed_values"]
+                for field in required_fields:
+                    if field not in mappings:
+                        raise ValueError(f"Required field '{field}' missing in company_mappings['{company_name}']")
+            else:
+                # Old format - will be migrated on next access
+                pass
+    
+    def _migrate_old_format(self) -> None:
+        """Migrate old format to new format if needed."""
+        # Migrate default cell_mappings
+        if "cell_mappings" in self.data:
+            cell_mappings = self.data["cell_mappings"]
+            if "field_mappings" not in cell_mappings and "settlement_data_columns" in cell_mappings:
+                # Old format detected - migrate
+                old_data_cols = cell_mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
+                old_output_cols = cell_mappings.get("statement_output_columns", ["E", "H", "J", "K"])
+                old_fixed = cell_mappings.get("statement_fixed_values", {})
+                
+                # Create new format
+                field_mappings = {}
+                if len(old_data_cols) >= 1 and len(old_output_cols) >= 1:
+                    field_mappings["name"] = {
+                        "settlement_column": old_data_cols[0],
+                        "statement_column": old_output_cols[0]
+                    }
+                if len(old_data_cols) >= 2 and len(old_output_cols) >= 2:
+                    field_mappings["payment"] = {
+                        "settlement_column": old_data_cols[1],
+                        "statement_column": old_output_cols[1]
+                    }
+                if len(old_data_cols) >= 3 and len(old_output_cols) >= 3:
+                    field_mappings["income_tax"] = {
+                        "settlement_column": old_data_cols[2],
+                        "statement_column": old_output_cols[2]
+                    }
+                if len(old_data_cols) >= 4 and len(old_output_cols) >= 4:
+                    field_mappings["local_income_tax"] = {
+                        "settlement_column": old_data_cols[3],
+                        "statement_column": old_output_cols[3]
+                    }
+                
+                fixed_values = {
+                    "business_code": {
+                        "column": "D",
+                        "value": old_fixed.get("column_d", 940918)
+                    },
+                    "resident_status": {
+                        "column": "G",
+                        "value": old_fixed.get("column_g", 1)
+                    },
+                    "tax_rate": {
+                        "column": "I",
+                        "value": old_fixed.get("column_i", 3)
+                    }
+                }
+                
+                # Update cell_mappings
+                cell_mappings["field_mappings"] = field_mappings
+                cell_mappings["fixed_values"] = fixed_values
+                # Keep old fields for backward compatibility during transition
+                
+        # Migrate company_mappings
+        if "company_mappings" in self.data:
+            for company_name, mappings in self.data["company_mappings"].items():
+                if "field_mappings" not in mappings and "settlement_data_columns" in mappings:
+                    # Old format detected - migrate
+                    old_data_cols = mappings.get("settlement_data_columns", ["C", "I", "J", "K"])
+                    old_output_cols = mappings.get("statement_output_columns", ["E", "H", "J", "K"])
+                    old_fixed = mappings.get("statement_fixed_values", {})
+                    
+                    # Create new format
+                    field_mappings = {}
+                    if len(old_data_cols) >= 1 and len(old_output_cols) >= 1:
+                        field_mappings["name"] = {
+                            "settlement_column": old_data_cols[0],
+                            "statement_column": old_output_cols[0]
+                        }
+                    if len(old_data_cols) >= 2 and len(old_output_cols) >= 2:
+                        field_mappings["payment"] = {
+                            "settlement_column": old_data_cols[1],
+                            "statement_column": old_output_cols[1]
+                        }
+                    if len(old_data_cols) >= 3 and len(old_output_cols) >= 3:
+                        field_mappings["income_tax"] = {
+                            "settlement_column": old_data_cols[2],
+                            "statement_column": old_output_cols[2]
+                        }
+                    if len(old_data_cols) >= 4 and len(old_output_cols) >= 4:
+                        field_mappings["local_income_tax"] = {
+                            "settlement_column": old_data_cols[3],
+                            "statement_column": old_output_cols[3]
+                        }
+                    
+                    fixed_values = {
+                        "business_code": {
+                            "column": "D",
+                            "value": old_fixed.get("column_d", 940918)
+                        },
+                        "resident_status": {
+                            "column": "G",
+                            "value": old_fixed.get("column_g", 1)
+                        },
+                        "tax_rate": {
+                            "column": "I",
+                            "value": old_fixed.get("column_i", 3)
+                        }
+                    }
+                    
+                    # Update mappings
+                    mappings["field_mappings"] = field_mappings
+                    mappings["fixed_values"] = fixed_values
     
     def _create_default(self) -> None:
         """Create default configuration structure."""
         self.data = {
             "statement_template_path": "",
             "current_company": "",
+            "driver_list_path": "",
             "cell_mappings": {
                 "settlement_input_range": "B1:B100",
-                "settlement_data_columns": ["C", "I", "J", "K"],
-                "statement_output_columns": ["E", "H", "J", "K"],
                 "statement_start_row": 2,
-                "statement_fixed_values": {
-                    "column_d": 940918,
-                    "column_g": 1,
-                    "column_i": 3
+                "field_mappings": {
+                    "name": {
+                        "settlement_column": "C",
+                        "statement_column": "E"
+                    },
+                    "resident_number": {
+                        "statement_column": "F"
+                    },
+                    "payment": {
+                        "settlement_column": "I",
+                        "statement_column": "H"
+                    },
+                    "income_tax": {
+                        "settlement_column": "J",
+                        "statement_column": "J"
+                    },
+                    "local_income_tax": {
+                        "settlement_column": "K",
+                        "statement_column": "K"
+                    }
+                },
+                "fixed_values": {
+                    "business_code": {
+                        "column": "D",
+                        "value": 940918
+                    },
+                    "resident_status": {
+                        "column": "G",
+                        "value": 1
+                    },
+                    "tax_rate": {
+                        "column": "I",
+                        "value": 3
+                    }
                 }
             },
             "company_mappings": {}
         }
         self.save()
+    
+    def get_driver_list_path(self) -> str:
+        """Get the driver list file path from configuration.
+        
+        Returns:
+            Path to driver list file (empty string if not set)
+        """
+        return self.data.get("driver_list_path", "")
+    
+    def set_driver_list_path(self, path: str) -> None:
+        """Set the driver list file path in configuration.
+        
+        Args:
+            path: Path to driver list file
+        """
+        if "driver_list_path" not in self.data:
+            self.data["driver_list_path"] = ""
+        self.data["driver_list_path"] = path
 
